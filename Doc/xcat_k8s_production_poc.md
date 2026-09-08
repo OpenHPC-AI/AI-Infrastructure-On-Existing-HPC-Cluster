@@ -1,5 +1,4 @@
 # Production PoC: xCAT-Managed Kubernetes Worker Bootstrap
-## Recommended Implementation — Points 40–50
 
 **Purpose:** Production-oriented PoC runbook for automatically enrolling and managing Kubernetes worker nodes provisioned by xCAT, while preserving Kubernetes worker identity across reboots.
 
