@@ -1,5 +1,6 @@
 
 Step1: Write the bootstrap script for kubernetes persistent storage and to join worker node to k8s cluster
+
 1.1 copy the storage-bootstrap script in osimage at ../rootimg/usr/local/sbin/
 ```bash
 #gpu-ai osimage rootimgdir
