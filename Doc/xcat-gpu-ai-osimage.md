@@ -5,6 +5,8 @@ Step1: Write the bootstrap script for kubernetes persistent storage and to join 
 ```bash
 #gpu-ai osimage rootimgdir
 export rootimgdir=/install/netboot/rocky9.6/x86_64/gpu-ai
+# Install the k8s-worker.tgz into your machine
+tar -xvf k8s-worker.tgz
 cd k8s-worker
 cp -ar bootstrap_script/xcat-k8s-storage-bootstrap.sh $rootimgdir/rootimg/usr/local/sbin/
 chmod 700 $rootimgdir/rootimg/usr/local/sbin/xcat-k8s-storage-bootstrap.sh
