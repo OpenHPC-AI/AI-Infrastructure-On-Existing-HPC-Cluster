@@ -107,6 +107,13 @@ chown root:root \
 Copy the persistent-storage bootstrap script into the OS image.
 
 From the `k8s-worker` project directory:
+```bash
+copy the tar file from configruation_file path
+cd ../configuration_file/
+tar -xvf k8s-worker.tgz
+cd k8s-worker
+```
+
 
 ```bash
 cp -a bootstrap_script/xcat-k8s-storage-bootstrap.sh \
