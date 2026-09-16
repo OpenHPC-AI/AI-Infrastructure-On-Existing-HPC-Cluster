@@ -180,3 +180,15 @@ The only solution could be :
 
 >💡Only if tested and implemented correctly.
 >
+
+
+### Pros:
+
+1. Persistent specific directories to help persist the identity hence fulfilling our basic requirement.
+2. Proper utilization with no or less dependencies.
+3. No problems in booting the OS because the nodes have data persisted.
+
+### Cons:
+
+1. **Local-disk dependency** — The node must retain access to the same local disk/partition across reboots; disk failure or replacement loses the persisted Kubernetes identity.
+2. **Bootstrap-script complexity** — The script must correctly distinguish **first boot** from **reboot/recovery** and avoid running `kubeadm join` again when valid Kubernetes state already exists.
