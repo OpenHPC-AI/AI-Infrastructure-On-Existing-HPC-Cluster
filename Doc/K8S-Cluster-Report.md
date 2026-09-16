@@ -1,204 +1,172 @@
+# WHAT?
 
+The problem we are facing in our HPC Environment is that any compute node / GPU node in the cluster to be added as a k8s worker node connected to the control-plane of the cluster, is a stateless machine that does not have a persistent data. Even if we put the kubeadm worker node joining command on these rebooted nodes, the nodes will have a new identity. That will create a confusion like 6 nodes restarted once will result in 12 distinct identities.
 
-# The Problem
+# WHY?
 
- We have a large HPC environment where worker machines are created from a **common, stateless xCAT image**. Whenever a worker starts, it should automatically become part of our Kubernetes cluster and be ready to run workloads.
+When a stateless `xCAT` node boots, it starts with a completely blank canvas in RAM. [1, 2]
+1. When you run `kubeadm join`, Kubernetes generates a unique node identity, crypto keys, and certificates, placing them into local directories like `/etc/kubernetes/` and `/var/lib/kubelet/`.
+2. When the node reboots, **those credentials are wiped out** because they reside in RAM. [1, 2]
+3. On the next boot, the node executes `kubeadm join` again. Because its old credentials are gone, the Kubernetes Control Plane treats it as a **brand-new node**, resulting in `node-1`, `node-1-f8df...`, etc., accumulating indefinitely.
 
- Currently, adding a new worker requires manually configuring the machine and running the Kubernetes registration command. This does not scale when we have many workers. It also becomes difficult to manage when machines are frequently rebooted, reprovisioned, or replaced.
+### In one line
 
----
+> **The root cause is that the xCAT stateless setup removes the Kubernetes worker identity when the node reboots, so the node cannot come back as the same Kubernetes worker.**
+> 
 
- > The challenge is to design a **secure and fully automated way for a newly booted worker to identify itself, obtain the information it needs to connect to the Kubernetes cluster, and register itself automatically**, without storing permanent credentials or another worker's identity inside the shared image.
+And **that** is why you need an automatic bootstrap/rejoin mechanism when the node starts again.
 
----
+# Solution?
 
- # Why Is This Happening?
+There is a solution to this case as: 
 
- ## The Root Cause
-
- When a worker joins Kubernetes, Kubernetes creates files on that machine that allow it to **remain recognized as the same worker**.
-
- When the machine reboots, those files are lost because the machine starts again from the original xCAT image.
-
- ### Why This Happens
-
- The Kubernetes worker's identity is stored **on the local machine**, but the xCAT setup does not preserve those files across a reboot.
-
- In simple terms:
-
- > **The machine's identity is not persistent.**
-
- As a result, when the machine reboots, it loses its identity and state.
-
- From Kubernetes' point of view, it can then look like:
-
- > "A new machine is trying to join."
-
- ### In One Line
-
- > **The root cause is that the xCAT stateless setup removes the Kubernetes worker's identity when the node reboots, so the node cannot come back as the same Kubernetes worker.**
-
- And **that** is why an automatic bootstrap/rejoin mechanism is needed when the node starts again.
+1. We can install the OS in stateful mode and we can use the same machine without loosing the identity.
+**BUT** THIS IS NOT OUR REQUIREMENT AND IT IS HARD TO MANAGE STATEFUL NODES.
+2. STATELITE mode persisting the required directories.
+3. Using xcat localdisk feature with stateless boot over pxe using xcat but requires the bootstrap script that checks if the data is on the localdisk or not if yes then add the node to the k8s cluster and if no then run the joining command to join this node as k8s cluster worker node.
+4. The LFS configured in such a way that nodes have access to specific directory based on their nodename or ip that persists the required data as required by the k8s cluster control-plane or kubelet, whatever! JUST LIKE OUR HOME DIRECTORY.
+BUT THIS IS NOT PRODUCTION-GRADE SOLUTION BECAUSE IT HAS DEPENDANIES LIKE NETWORKING AND CONSISTENT FS.
 
 ---
 
- # About Tokens
+# About Tokens
 
- The `kubeadm join` token is used only during the initial authentication and bootstrap process when a worker joins the Kubernetes cluster.
+The kubeadm join token is strictly used for initial authentication and bootstrap TLS client certificate generation during the kubeadm join phase.
 
- ## 1\. Token Expiration Concern
+## 1. Token Expiration Concern
 
- > The Kubernetes bootstrap token has a **24-hour TTL**. Once the token expires, it is automatically deleted and can no longer be used to join a node to the Kubernetes control plane.
->
->  If `kubeadm join <token>` is included in the xCAT stateless OS image boot script, a node can successfully join the control plane only while the token is valid. **After 24 hours, if the node restarts or reboots, the expired token will prevent it from rejoining the Kubernetes control plane.**
+> The Kubernetes bootstrap token has a **24-hour TTL**. Once the token expires, it is automatically deleted and can no longer be used to join nodes to the Kubernetes Control Plane.
+If `kubeadm join <token>` is included in the xCAT stateless OS image boot script, a node can successfully join the Control Plane only while the token is valid. **After 24 hours, if the node restarts or reboots, the expired token will prevent it from rejoining the Kubernetes Control Plane.**
+> 
 
- ## 2\. Solution
+## 2. Solution:
 
- One option is to create a token that does not expire:
-
-```
-sudo kubeadm token create --ttl 0
-```
-
- For a custom lifetime:
+1. Create a Token that never expires
 
 ```
+sudo kubeadm token create ---ttl 0 
+
+#for a custom lifetime
 sudo kubeadm token create --ttl 48h
 ```
 
- **Note:** Tokens that never expire can be useful for automation, but they create a security risk if the token is exposed.
+Note: Infinite tokens are handy for automation but present a security risk if exposed.
 
- ### From the Worker's Side: The Token Is Not Needed After the Initial Join
+*From worker side:  Never. Once a worker node has successfully joined the cluster, it never loses communication due to the token expiring.*
 
- Once a worker has successfully joined the cluster, it does **not** lose communication with the control plane simply because the bootstrap token expires.
-
- ### How Communication Works After the Worker Joins
-
- - **Initial TLS bootstrap:** The temporary token is used to authenticate with the control plane and start the certificate process.
-- **Kubelet client certificate:** The control plane approves the request and provides the worker's `kubelet` with a unique client certificate.
-- **Automatic renewal:** By default, the `kubelet` automatically renews its own certificate before it expires, usually within its certificate lifetime. It does not need the original bootstrap token again.
-
- ### Why Else Might a Node Lose Communication?
-
- If a worker loses communication with the control plane, it is likely due to one of these common issues:
-
- - **Network connectivity:** Firewalls, security groups, or a broken network plugin such as Calico or Flannel may be blocking ports `6443` (API server) or `10250` (Kubelet).
-- **Kubelet stopped:** The `kubelet` service on the worker may have stopped. Its status can be checked with:
-
-  ```
-  systemctl status kubelet
-  ```
-- **Expired Kubelet certificate:** If the node has been powered off for many months, automatic certificate renewal may have been missed, requiring manual certificate renewal.
+- How Communication Works Post-Join
+    - **TLS Bootstrap:** The temporary token is only used to talk to the control plane long enough to submit a Certificate Signing Request (CSR).
+    - **Kubelet Client Certificate:** The control plane signs this request and issues a unique client certificate to the worker node's `kubelet`.
+    - **Automatic Renewal:** By default, the `kubelet` automatically renews its own unique certificate before it expires (usually every 1 year). It does not need the original bootstrap token ever again.
+- Why Else Might a Node Lose Communication?
+    
+    If your worker node is losing communication with the control plane, it is likely due to one of these common issues:
+    
+    - **Network Connectivity:** Firewalls, security groups, or a broken network plugin (Calico, Flannel, etc.) are blocking ports `6443` (API Server) or `10250` (Kubelet).
+    - **Kubelet Crashed:** The `kubelet` service on the worker node stopped running. Check its status using `systemctl status kubelet`.
+    - **Expired Kubelet Certificate:** If the node was powered off for many months, its auto-renewal might have missed the window, requiring a manual certificate renewal.
 
 ---
 
- # The Solution With a Loophole
+# About files and node identity
 
- ### Using xCAT's Local Disk Feature
-
- We can solve the problem of losing the worker's identity after a reboot by using **xCAT's local disk feature**.
-
- A part of the worker's disk can be kept **persistent**, even though the rest of the operating system is recreated from the xCAT image.
-
- This allows us to save the Kubernetes information on the persistent part of the disk.
-
-```
-Worker boots
-     ↓
-xCAT loads the operating system
-     ↓
-Persistent disk is mounted
-     ↓
-Previous Kubernetes information is available
-     ↓
-Worker is recognized as the same worker
-```
-
- This means that when an existing worker reboots, we **do not need to connect it to Kubernetes again**. Its previous information is still available on the persistent disk.
-
- ### The Loophole
-
- The problem is solved **only after the worker has already joined Kubernetes once**.
-
- For a completely new worker, the persistent disk does not contain any Kubernetes information yet.
-
- Therefore, the first time the worker starts, we still have to manually run:
-
-```
-kubeadm join ...
-```
-
- After that, the information created during the join can be saved on the persistent disk.
-
- The process then becomes:
-
-```
-New worker
-    ↓
-No Kubernetes information
-    ↓
-Manually run kubeadm join
-    ↓
-Kubernetes information is created
-    ↓
-Save it on persistent disk
-    ↓
-Future reboots use the saved information
-```
-
- The **loophole** is therefore:
-
- > **xCAT's persistent local disk can preserve the worker's Kubernetes information across reboots, but it does not solve the initial joining of a new worker. The first join is still a manual step.**
-
- So the remaining problem is to **automate only that first join**, while leaving already-joined workers untouched when they reboot.
-
- > **This is why the Kubernetes cluster connection is broken when the node restarts. Even if the worker's data is persisted, a completely new worker still cannot join the cluster without the initial join process.**
+- 1. What is stored in `/etc/kubernetes/` ?
+    
+    This contains important Kubernetes node configuration and credentials.
+    
+    For a joined worker, you'll typically have things such as:
+    
+    ```
+    /etc/kubernetes/
+    ├── kubelet.conf      #  tells the kubelet how to authenticate to and communicate with the Kubernetes API server
+    ├── kubeadm-flags.env # env variables
+    └── pki/              # Has certificates
+    ```
+    
+    The most important one is:
+    
+    ```
+    /etc/kubernetes/kubelet.conf
+    ```
+    
+    It tells the kubelet how to authenticate to and communicate with the Kubernetes API server.
+    
+- 2. What is stored in  `/var/lib/kubelet/` ?
+    
+    This is even more important for a worker.
+    
+    It contains kubelet runtime state, configuration, certificates, pod state, plugins, and other information.
+    
+    For example:
+    
+    ```
+    /var/lib/kubelet/
+    ├── config.yaml
+    ├── pki/
+    │   ├── kubelet-client-current.pem
+    │   └── kubelet.crt
+    ├── pods/
+    ├── plugins/
+    ├── plugins_registry/
+    └── checkpoints/
+    ```
+    
+    The exact contents depend on Kubernetes/kubelet version and configuration.
+    
+- 3. What is stored in  `/var/lib/containerd/` ?
+    
+    This contains container runtime state, including image/content/snapshot information.
+    
+    Think:
+    
+    ```
+    /var/lib/containerd/
+           |
+           +-- images
+           +-- content
+           +-- snapshots
+           +-- container metadata
+    ```
+    
+    If this is stateless, the node loses its locally cached container images and runtime state when the OS is recreated.
+    
+    Basically it is cache for images.
+    
 
 ---
 
- # Security Report
+The **loophole** is therefore:
 
- ## What If Someone Steals the Token?
+> **xCAT's persistent local disk can preserve the worker's Kubernetes information across reboots, but it does not solve the initial joining of a new worker. The first join is still a manual step.**
+> 
 
- Consider the following situation:
+So the remaining problem is to **automate only that first join**, while leaving already-joined workers untouched when they reboot.
+
+---
+
+# **What if someone steals the token?**
+
+Consider:
 
 ```
 GPU-worker-17
      │
      │ token accidentally leaked
      ▼
-Attacker-controlled machine
+attacker-controlled machine
      │
      │ can reach 10.x.x.x:6443
      ▼
 Kubernetes API
 ```
 
- The attacker could attempt to use the token for bootstrap authentication.
+The attacker can attempt to use that token for bootstrap authentication.
 
- That's why the token should be:
+That's why the token should be:
 
- - **Short-lived**
-- Not shared unnecessarily
-- Not stored permanently on workers
-- Not embedded in images
-- Not committed to Git
-- Not exposed in logs
-
----
-
- # The Conclusion
-
- A worker node that needs to be added to the cluster after a reboot needs to use the `kubeadm join` process.
-
- But, the `kubeadm join` command cannot simply be placed in the shared xCAT image and expected to work indefinitely because the bootstrap token has a limited lifetime.
-
- We have therefore set up a **bootstrap service on the compute node**. Whenever a machine boots using the given image, the service will use the available token to handle the Kubernetes join process automatically.
-
- The remaining part of the solution is to make this bootstrap process secure and ensure that it can distinguish between:
-
- - A **new worker** that needs to join Kubernetes for the first time.
-- An **existing worker** that already has its Kubernetes information stored on the persistent disk and only needs to restore that information after reboot.
-
- This allows us to automate the initial worker registration while preserving the existing worker identity across reboots.
-
+- **short-lived**
+- not shared unnecessarily
+- not stored permanently on workers
+- not embedded in images
+- not committed to Git
+- not exposed in logs
