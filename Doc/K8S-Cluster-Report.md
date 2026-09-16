@@ -4,9 +4,9 @@ The problem we are facing in our HPC Environment is that any compute node / GPU 
 
 # WHY?
 
-When a stateless `xCAT` node boots, it starts with a completely blank canvas in RAM. 
+When a stateless `xCAT` node boots, it starts with a completely blank canvas in RAM. [1, 2]
 1. When you run `kubeadm join`, Kubernetes generates a unique node identity, crypto keys, and certificates, placing them into local directories like `/etc/kubernetes/` and `/var/lib/kubelet/`.
-2. When the node reboots, **those credentials are wiped out** because they reside in RAM. 
+2. When the node reboots, **those credentials are wiped out** because they reside in RAM. [1, 2]
 3. On the next boot, the node executes `kubeadm join` again. Because its old credentials are gone, the Kubernetes Control Plane treats it as a **brand-new node**, resulting in `node-1`, `node-1-f8df...`, etc., accumulating indefinitely.
 
 ### In one line
@@ -22,10 +22,10 @@ There is a solution to this case as:
 
 1. We can install the OS in stateful mode and we can use the same machine without loosing the identity.
 **BUT** THIS IS NOT OUR REQUIREMENT AND IT IS HARD TO MANAGE STATEFUL NODES.
-2. STATELITE mode persisting the required directories. **BUT** THIS IS NOT PRODUCTION-GRADE SOLUTION BECAUSE IT HAS DEPENDANIES LIKE NETWORKING AND CONSISTENT FS.
+2. STATELITE mode persisting the required directories. BUT THIS IS NOT PRODUCTION-GRADE SOLUTION BECAUSE IT HAS DEPENDANIES LIKE NETWORKING AND CONSISTENT FS.
 3. Using xcat localdisk feature with stateless boot over pxe using xcat but requires the bootstrap script that checks if the data is on the localdisk or not if yes then add the node to the k8s cluster and if no then run the joining command to join this node as k8s cluster worker node.
 4. The LFS configured in such a way that nodes have access to specific directory based on their nodename or ip that persists the required data as required by the k8s cluster control-plane or kubelet, whatever! JUST LIKE OUR HOME DIRECTORY.
-**BUT** THIS IS NOT PRODUCTION-GRADE SOLUTION BECAUSE IT HAS DEPENDANIES LIKE NETWORKING AND CONSISTENT FS.
+BUT THIS IS NOT PRODUCTION-GRADE SOLUTION BECAUSE IT HAS DEPENDANIES LIKE NETWORKING AND CONSISTENT FS.
 
 ---
 
@@ -170,3 +170,13 @@ That's why the token should be:
 - not embedded in images
 - not committed to Git
 - not exposed in logs
+
+# Conclusion?
+
+The only solution could be :
+
+> Using xcat localdisk feature with stateless boot over pxe using xcat but requires the bootstrap script that checks if the data is on the localdisk or not if yes then add the node to the k8s cluster and if no then run the joining command to join this node as k8s cluster worker node.
+> 
+
+>💡Only if tested and implemented correctly.
+>
